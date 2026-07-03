@@ -111,6 +111,15 @@ test('MCP server registers expected tool names', async () => {
 
     const names = (listResult.tools ?? []).map((tool) => tool.name);
     assert.equal(names.includes('akoya_connection_info'), true);
+    assert.equal(names.includes('akoya_oauth_create_state'), true);
+    assert.equal(names.includes('akoya_oauth_validate_state'), true);
+    assert.equal(names.includes('akoya_auth_url'), true);
+    assert.equal(names.includes('akoya_token_exchange'), true);
+    assert.equal(names.includes('akoya_refresh_token'), true);
+    assert.equal(names.includes('akoya_accounts'), true);
+    assert.equal(names.includes('akoya_balances'), true);
+    assert.equal(names.includes('akoya_transactions'), true);
+    assert.equal(names.includes('akoya_consent_grant'), true);
     assert.equal(names.includes('vault_connection_info'), true);
     assert.equal(names.includes('vault_set_variable'), true);
     assert.equal(names.includes('vault_get_variable'), true);
@@ -182,6 +191,58 @@ test('MCP vault tools can set/get/list/delete variables in integration flow', as
     };
     const deletePayload = JSON.parse(deleteResult.content?.[0]?.text ?? '{}') as { deleted?: boolean };
     assert.equal(deletePayload.deleted, true);
+  } finally {
+    await pair.close();
+  }
+});
+
+test('MCP OAuth state tools create and validate one-time state values', async () => {
+  configureTestEnvironment();
+  const pair = await createConnectedPair();
+
+  try {
+    await pair.request('initialize', {
+      protocolVersion: LATEST_PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: {
+        name: 'test-client',
+        version: '1.0.0'
+      }
+    });
+    await pair.notify('notifications/initialized', {});
+
+    const createResult = (await pair.request('tools/call', {
+      name: 'akoya_oauth_create_state',
+      arguments: {
+        userId: 'user-123',
+        providerId: 'mikomo',
+        ttlSeconds: 120
+      }
+    })) as {
+      content?: Array<{ text?: string }>;
+    };
+
+    const created = JSON.parse(createResult.content?.[0]?.text ?? '{}') as {
+      state?: string;
+      userId?: string;
+    };
+    assert.equal(created.userId, 'user-123');
+    assert.equal(typeof created.state, 'string');
+    assert.equal((created.state ?? '').length > 0, true);
+
+    const validateResult = (await pair.request('tools/call', {
+      name: 'akoya_oauth_validate_state',
+      arguments: {
+        state: created.state,
+        userId: 'user-123',
+        providerId: 'mikomo',
+        consume: true
+      }
+    })) as {
+      content?: Array<{ text?: string }>;
+    };
+    const validated = JSON.parse(validateResult.content?.[0]?.text ?? '{}') as { valid?: boolean };
+    assert.equal(validated.valid, true);
   } finally {
     await pair.close();
   }
