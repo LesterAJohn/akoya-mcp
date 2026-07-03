@@ -65,11 +65,24 @@ Behavior:
 ### MCP Tools
 
 - `akoya_connection_info`: Returns Akoya and Vault configuration status.
+- `akoya_oauth_create_state`: Generates a one-time OAuth state value and stores it in Vault for CSRF checks.
+- `akoya_oauth_validate_state`: Validates (and optionally consumes) a stored OAuth state.
+- `akoya_auth_url`: Builds Akoya OAuth authorization URL (`/auth`).
+- `akoya_token_exchange`: Exchanges authorization code for tokens; supports optional per-user token storage.
+- `akoya_refresh_token`: Refreshes tokens; can read/write user-scoped refresh/id tokens.
+- `akoya_accounts`: Calls Akoya investments accounts endpoint.
+- `akoya_balances`: Calls Akoya balances endpoint.
+- `akoya_transactions`: Calls Akoya transactions endpoint.
+- `akoya_consent_grant`: Calls Akoya consent grant endpoint.
 - `vault_connection_info`: Returns Vault provider and connection details, including startup import status and restored internal secret-path count.
 - `vault_set_variable`: Stores a value at `secretPath` + `key`.
 - `vault_get_variable`: Reads a value at `secretPath` + `key` (masked unless `revealValue=true`).
 - `vault_list_variables`: Lists stored keys at a path.
 - `vault_delete_variable`: Deletes a key at a path.
+
+User-scoped OAuth tokens are stored under:
+
+- `akoya/users/{userId}/providers/{providerId}/tokens`
 
 ## Akoya Endpoint Catalog
 
@@ -153,7 +166,9 @@ npm run check
 
 ### Docker (Compose)
 
-Use this `docker-compose.yml` to run with internal Vault persistence:
+Use this `docker-compose.yml` to run with internal Vault persistence.
+
+Important: this server uses stdio transport (`serveStdio`), not HTTP. Do not expose port `3000` unless you add a separate HTTP/SSE/streamable-HTTP wrapper process.
 
 ```yaml
 version: "3.9"
@@ -175,8 +190,6 @@ services:
 			AKOYA_MANAGEMENT_VERSION: v2
 			AKOYA_NOTIFICATIONS_VERSION: v1
 			AKOYA_CONSENT_VERSION: v1
-		ports:
-			- "3000:3000"
 		stdin_open: true
 		tty: true
 		restart: unless-stopped
@@ -187,6 +200,43 @@ Start with:
 ```bash
 docker compose up
 ```
+
+## Testing
+
+Run the emulated Akoya test suite (no live Akoya dependency):
+
+```bash
+npm test
+```
+
+Watch mode:
+
+```bash
+npm run test:watch
+```
+
+Run MCP tool integration tests using in-process MCP transport:
+
+```bash
+npm run test:mcp
+```
+
+What it validates:
+
+- MCP service-side Akoya request flow without external connectivity.
+- Startup hydration precedence (`env -> vault -> configuration defaults`).
+- Institution-scoped token separation.
+- Token refresh persistence into institution Vault paths.
+- URL resolution and Vault seeding behavior.
+- MCP `tools/list` and `tools/call` behavior for registered tools.
+
+## OAuth Integration Notes
+
+- This MCP server does not host OAuth callback routes because it runs over stdio.
+- OpenWebUI or another host app must own the browser redirect, callback endpoint, and session lifecycle.
+- Use `akoya_oauth_create_state` before redirect and `akoya_oauth_validate_state` on callback to enforce state checks.
+- Use `akoya_token_exchange` and `akoya_refresh_token` with `userId` to keep token lifecycles separated per user/provider.
+- Use `akoya_consent_grant` to fetch consent details after consent completion in the host app.
 
 ## Action Log
 
@@ -201,4 +251,7 @@ docker compose up
 - 2026-07-03: Added startup seed defaults for Akoya general config keys, credentials, and tokens when missing in Vault.
 - 2026-07-03: Added startup section with npm commands and Docker Compose YAML example.
 - 2026-07-03: Updated startup hydration order to environment variable -> Vault -> configuration file defaults.
+- 2026-07-03: Added emulated Akoya test suite and npm test scripts for no-live-connection validation.
+- 2026-07-03: Added MCP stdio integration tests for tool listing and tool execution behavior.
+- 2026-07-03: Exposed Akoya auth/data consent tools (`akoya_auth_url`, `akoya_token_exchange`, `akoya_refresh_token`, `akoya_accounts`, `akoya_balances`, `akoya_transactions`, `akoya_consent_grant`) and added OAuth state/user-token guidance for host apps.
 
