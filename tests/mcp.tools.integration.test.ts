@@ -20,6 +20,7 @@ function configureTestEnvironment(): void {
   process.env.VAULT_PROVIDER = 'internal';
   process.env.VAULT_INTERNAL_BINARY_PATH = join(tmpdir(), `akoya-mcp-mcp-tools-${randomUUID()}.bin`);
   process.env.VAULT_EXPORT_INTERVAL_SECONDS = '900';
+  process.env.MCP_ALLOW_SENSITIVE_OUTPUT = 'false';
 }
 
 async function createConnectedPair() {
@@ -110,21 +111,50 @@ test('MCP server registers expected tool names', async () => {
     };
 
     const names = (listResult.tools ?? []).map((tool) => tool.name);
-    assert.equal(names.includes('akoya_connection_info'), true);
-    assert.equal(names.includes('akoya_oauth_create_state'), true);
-    assert.equal(names.includes('akoya_oauth_validate_state'), true);
-    assert.equal(names.includes('akoya_auth_url'), true);
-    assert.equal(names.includes('akoya_token_exchange'), true);
-    assert.equal(names.includes('akoya_refresh_token'), true);
-    assert.equal(names.includes('akoya_accounts'), true);
-    assert.equal(names.includes('akoya_balances'), true);
-    assert.equal(names.includes('akoya_transactions'), true);
-    assert.equal(names.includes('akoya_consent_grant'), true);
-    assert.equal(names.includes('vault_connection_info'), true);
-    assert.equal(names.includes('vault_set_variable'), true);
-    assert.equal(names.includes('vault_get_variable'), true);
-    assert.equal(names.includes('vault_list_variables'), true);
-    assert.equal(names.includes('vault_delete_variable'), true);
+    const expectedToolNames = [
+      'akoya_connection_info',
+      'akoya_oauth_create_state',
+      'akoya_oauth_validate_state',
+      'akoya_auth_url',
+      'akoya_token_exchange',
+      'akoya_refresh_token',
+      'akoya_revoke_refresh_token',
+      'akoya_service_token',
+      'akoya_account_info',
+      'akoya_accounts',
+      'akoya_balances',
+      'akoya_transactions',
+      'akoya_taxlots',
+      'akoya_customer_info',
+      'akoya_account_holder_info',
+      'akoya_payments',
+      'akoya_statement_list',
+      'akoya_statement',
+      'akoya_search_tax_forms',
+      'akoya_retrieve_tax_form',
+      'akoya_create_app',
+      'akoya_update_app',
+      'akoya_get_all_apps',
+      'akoya_get_purchased_products',
+      'akoya_get_valid_providers_for_products',
+      'akoya_get_subscriptions_for_app',
+      'akoya_list_notification_subscriptions',
+      'akoya_create_notification_subscription',
+      'akoya_get_notification_subscription_by_id',
+      'akoya_update_notification_subscription',
+      'akoya_delete_notification_subscription',
+      'akoya_send_sandbox_test_event',
+      'akoya_consent_grant',
+      'vault_connection_info',
+      'vault_set_variable',
+      'vault_get_variable',
+      'vault_list_variables',
+      'vault_delete_variable'
+    ];
+
+    for (const toolName of expectedToolNames) {
+      assert.equal(names.includes(toolName), true);
+    }
   } finally {
     await pair.close();
   }
@@ -166,7 +196,7 @@ test('MCP vault tools can set/get/list/delete variables in integration flow', as
     };
     const getPayload = JSON.parse(getResult.content?.[0]?.text ?? '{}') as { found?: boolean; value?: string };
     assert.equal(getPayload.found, true);
-    assert.equal(getPayload.value, 'hello');
+    assert.equal(getPayload.value, 'set');
 
     const listResult = (await pair.request('tools/call', {
       name: 'vault_list_variables',

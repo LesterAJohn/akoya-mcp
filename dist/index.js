@@ -1,11 +1,15 @@
+import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/server';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import * as z from 'zod/v4';
-import { VaultService } from './services/vaultService.js';
-import { fileURLToPath } from 'node:url';
 import { AkoyaService } from './services/akoyaService.js';
-import { randomUUID } from 'node:crypto';
+import { VaultService } from './services/vaultService.js';
 const OAUTH_STATE_PATH = 'akoya/oauth/states';
+const SENSITIVE_OUTPUT_ENV = 'MCP_ALLOW_SENSITIVE_OUTPUT';
+function isSensitiveOutputAllowed() {
+    return String(process.env[SENSITIVE_OUTPUT_ENV] ?? '').toLowerCase() === 'true';
+}
 function toTextResponse(data) {
     return {
         content: [
@@ -16,6 +20,17 @@ function toTextResponse(data) {
         ]
     };
 }
+function maskSensitiveTokenFields(payload) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        return payload;
+    }
+    const sensitiveKeys = new Set(['id_token', 'refresh_token', 'access_token']);
+    const output = {};
+    for (const [key, value] of Object.entries(payload)) {
+        output[key] = sensitiveKeys.has(key) ? 'redacted' : value;
+    }
+    return output;
+}
 function buildUserTokenPath(userId, providerId) {
     const normalizedUser = userId.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
     const normalizedProvider = (providerId ?? 'default').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
@@ -24,21 +39,33 @@ function buildUserTokenPath(userId, providerId) {
 function parseTokenPayload(payload) {
     return payload;
 }
+async function resolveUserIdToken(vaultService, userId, providerId, idToken) {
+    if (idToken) {
+        return idToken;
+    }
+    if (!userId) {
+        return undefined;
+    }
+    return (await vaultService.getVariable(buildUserTokenPath(userId, providerId), 'id_token')) ?? undefined;
+}
 export function buildServer() {
     const server = new McpServer({ name: 'akoya-mcp', version: '0.1.0' });
     const vaultService = new VaultService();
     const akoyaService = new AkoyaService(vaultService);
+    const allowSensitiveOutput = isSensitiveOutputAllowed();
     server.registerTool('akoya_connection_info', {
-        description: 'Return the local Akoya MCP starter configuration.',
+        description: 'Return local Akoya MCP configuration and scope information.',
         inputSchema: z.object({})
     }, async () => toTextResponse({
         service: 'akoya',
-        mode: 'local-starter',
+        mode: 'full-endpoint-coverage',
+        scope: 'All endpoints listed in the Akoya endpoint catalog are mapped to MCP tools in this server.',
         transport: 'stdio',
         environment: {
             AKOYA_BASE_URL: process.env.AKOYA_BASE_URL ?? null,
             AKOYA_CLIENT_ID: process.env.AKOYA_CLIENT_ID ? 'set' : null,
             AKOYA_CLIENT_SECRET: process.env.AKOYA_CLIENT_SECRET ? 'set' : null,
+            MCP_ALLOW_SENSITIVE_OUTPUT: allowSensitiveOutput,
             ...vaultService.getConnectionInfo()
         },
         vaultConfigured: vaultService.isConfigured(),
@@ -144,7 +171,11 @@ export function buildServer() {
                 await vaultService.setVariable(userScopedPath, 'token_type', payload.token_type);
             }
         }
-        return toTextResponse({ response, userScopedPath });
+        return toTextResponse({
+            response: allowSensitiveOutput ? response : maskSensitiveTokenFields(response),
+            sensitiveOutputIncluded: allowSensitiveOutput,
+            userScopedPath
+        });
     });
     server.registerTool('akoya_refresh_token', {
         description: 'Refresh Akoya tokens using refresh token from input or user-scoped vault path.',
@@ -183,8 +214,56 @@ export function buildServer() {
                 await vaultService.setVariable(userScopedPath, 'token_type', payload.token_type);
             }
         }
-        return toTextResponse({ response, userScopedPath });
+        return toTextResponse({
+            response: allowSensitiveOutput ? response : maskSensitiveTokenFields(response),
+            sensitiveOutputIncluded: allowSensitiveOutput,
+            userScopedPath
+        });
     });
+    server.registerTool('akoya_revoke_refresh_token', {
+        description: 'Revoke refresh token with Akoya IDP revoke endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            providerId: z.string().min(1).optional(),
+            token: z.string().min(1).optional(),
+            clientId: z.string().min(1).optional(),
+            clientSecret: z.string().min(1).optional(),
+            tokenTypeHint: z.enum(['refresh_token']).optional()
+        })
+    }, async (input) => toTextResponse(await akoyaService.revoke(input)));
+    server.registerTool('akoya_service_token', {
+        description: 'Request service token using client credentials from Akoya STS.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            clientId: z.string().min(1).optional(),
+            clientSecret: z.string().min(1).optional(),
+            scope: z.string().min(1)
+        })
+    }, async (input) => toTextResponse({
+        response: allowSensitiveOutput
+            ? await akoyaService.serviceToken(input)
+            : maskSensitiveTokenFields(await akoyaService.serviceToken(input)),
+        sensitiveOutputIncluded: allowSensitiveOutput
+    }));
+    server.registerTool('akoya_account_info', {
+        description: 'Call Akoya account information endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            providerId: z.string().min(1).optional(),
+            mode: z.string().min(1).optional(),
+            accountIds: z.string().min(1).optional(),
+            idToken: z.string().min(1).optional(),
+            userId: z.string().min(1).optional(),
+            interactionType: z.enum(['USER', 'BATCH']).optional(),
+            intentType: z.enum(['payments', 'nonpayments']).optional(),
+            lastAccess: z.string().min(1).optional()
+        })
+    }, async ({ userId, providerId, idToken, ...input }) => toTextResponse(await akoyaService.accountInfo({
+        ...input,
+        providerId,
+        idToken: await resolveUserIdToken(vaultService, userId, providerId, idToken)
+    })));
     server.registerTool('akoya_accounts', {
         description: 'Call Akoya accounts endpoint.',
         inputSchema: z.object({
@@ -201,11 +280,11 @@ export function buildServer() {
             intentType: z.enum(['payments', 'nonpayments']).optional(),
             lastAccess: z.string().min(1).optional()
         })
-    }, async ({ userId, providerId, idToken, ...input }) => {
-        const resolvedIdToken = idToken ??
-            (userId ? (await vaultService.getVariable(buildUserTokenPath(userId, providerId), 'id_token')) ?? undefined : undefined);
-        return toTextResponse(await akoyaService.accounts({ ...input, providerId, idToken: resolvedIdToken }));
-    });
+    }, async ({ userId, providerId, idToken, ...input }) => toTextResponse(await akoyaService.accounts({
+        ...input,
+        providerId,
+        idToken: await resolveUserIdToken(vaultService, userId, providerId, idToken)
+    })));
     server.registerTool('akoya_balances', {
         description: 'Call Akoya balances endpoint.',
         inputSchema: z.object({
@@ -220,11 +299,11 @@ export function buildServer() {
             intentType: z.enum(['payments', 'nonpayments']).optional(),
             lastAccess: z.string().min(1).optional()
         })
-    }, async ({ userId, providerId, idToken, ...input }) => {
-        const resolvedIdToken = idToken ??
-            (userId ? (await vaultService.getVariable(buildUserTokenPath(userId, providerId), 'id_token')) ?? undefined : undefined);
-        return toTextResponse(await akoyaService.balances({ ...input, providerId, idToken: resolvedIdToken }));
-    });
+    }, async ({ userId, providerId, idToken, ...input }) => toTextResponse(await akoyaService.balances({
+        ...input,
+        providerId,
+        idToken: await resolveUserIdToken(vaultService, userId, providerId, idToken)
+    })));
     server.registerTool('akoya_transactions', {
         description: 'Call Akoya transactions endpoint.',
         inputSchema: z.object({
@@ -243,13 +322,296 @@ export function buildServer() {
             intentType: z.enum(['payments', 'nonpayments']).optional(),
             lastAccess: z.string().min(1).optional()
         })
-    }, async ({ userId, providerId, idToken, ...input }) => {
-        const resolvedIdToken = idToken ??
-            (userId ? (await vaultService.getVariable(buildUserTokenPath(userId, providerId), 'id_token')) ?? undefined : undefined);
-        return toTextResponse(await akoyaService.transactions({ ...input, providerId, idToken: resolvedIdToken }));
-    });
+    }, async ({ userId, providerId, idToken, ...input }) => toTextResponse(await akoyaService.transactions({
+        ...input,
+        providerId,
+        idToken: await resolveUserIdToken(vaultService, userId, providerId, idToken)
+    })));
+    server.registerTool('akoya_taxlots', {
+        description: 'Call Akoya taxlots endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            providerId: z.string().min(1).optional(),
+            accountId: z.string().min(1).optional(),
+            holdingId: z.string().min(1).optional(),
+            offset: z.number().int().nonnegative().optional(),
+            limit: z.number().int().positive().optional(),
+            idToken: z.string().min(1).optional(),
+            userId: z.string().min(1).optional(),
+            interactionType: z.enum(['USER', 'BATCH']).optional(),
+            intentType: z.enum(['payments', 'nonpayments']).optional(),
+            lastAccess: z.string().min(1).optional()
+        })
+    }, async ({ userId, providerId, idToken, ...input }) => toTextResponse(await akoyaService.taxlots({
+        ...input,
+        providerId,
+        idToken: await resolveUserIdToken(vaultService, userId, providerId, idToken)
+    })));
+    server.registerTool('akoya_customer_info', {
+        description: 'Call Akoya customer information endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            providerId: z.string().min(1).optional(),
+            mode: z.string().min(1).optional(),
+            idToken: z.string().min(1).optional(),
+            userId: z.string().min(1).optional(),
+            interactionType: z.enum(['USER', 'BATCH']).optional(),
+            intentType: z.enum(['payments', 'nonpayments']).optional(),
+            lastAccess: z.string().min(1).optional()
+        })
+    }, async ({ userId, providerId, idToken, ...input }) => toTextResponse(await akoyaService.customerInfo({
+        ...input,
+        providerId,
+        idToken: await resolveUserIdToken(vaultService, userId, providerId, idToken)
+    })));
+    server.registerTool('akoya_account_holder_info', {
+        description: 'Call Akoya account holder information endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            providerId: z.string().min(1).optional(),
+            accountId: z.string().min(1).optional(),
+            mode: z.string().min(1).optional(),
+            idToken: z.string().min(1).optional(),
+            userId: z.string().min(1).optional(),
+            interactionType: z.enum(['USER', 'BATCH']).optional(),
+            intentType: z.enum(['payments', 'nonpayments']).optional(),
+            lastAccess: z.string().min(1).optional()
+        })
+    }, async ({ userId, providerId, idToken, ...input }) => toTextResponse(await akoyaService.accountHolderInfo({
+        ...input,
+        providerId,
+        idToken: await resolveUserIdToken(vaultService, userId, providerId, idToken)
+    })));
+    server.registerTool('akoya_payments', {
+        description: 'Call Akoya payments endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            providerId: z.string().min(1).optional(),
+            accountId: z.string().min(1).optional(),
+            idToken: z.string().min(1).optional(),
+            userId: z.string().min(1).optional(),
+            interactionType: z.enum(['USER', 'BATCH']).optional(),
+            intentType: z.enum(['payments', 'nonpayments']).optional(),
+            lastAccess: z.string().min(1).optional()
+        })
+    }, async ({ userId, providerId, idToken, ...input }) => toTextResponse(await akoyaService.payments({
+        ...input,
+        providerId,
+        idToken: await resolveUserIdToken(vaultService, userId, providerId, idToken)
+    })));
+    server.registerTool('akoya_statement_list', {
+        description: 'Call Akoya statement list endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            providerId: z.string().min(1).optional(),
+            accountId: z.string().min(1).optional(),
+            startTime: z.string().min(1).optional(),
+            endTime: z.string().min(1).optional(),
+            offset: z.number().int().nonnegative().optional(),
+            limit: z.number().int().positive().optional(),
+            idToken: z.string().min(1).optional(),
+            userId: z.string().min(1).optional(),
+            interactionType: z.enum(['USER', 'BATCH']).optional(),
+            intentType: z.enum(['payments', 'nonpayments']).optional(),
+            lastAccess: z.string().min(1).optional()
+        })
+    }, async ({ userId, providerId, idToken, ...input }) => toTextResponse(await akoyaService.statementList({
+        ...input,
+        providerId,
+        idToken: await resolveUserIdToken(vaultService, userId, providerId, idToken)
+    })));
+    server.registerTool('akoya_statement', {
+        description: 'Call Akoya statement retrieval endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            providerId: z.string().min(1).optional(),
+            accountId: z.string().min(1).optional(),
+            statementId: z.string().min(1).optional(),
+            accept: z.string().min(1).optional(),
+            idToken: z.string().min(1).optional(),
+            userId: z.string().min(1).optional(),
+            interactionType: z.enum(['USER', 'BATCH']).optional(),
+            intentType: z.enum(['payments', 'nonpayments']).optional(),
+            lastAccess: z.string().min(1).optional()
+        })
+    }, async ({ userId, providerId, idToken, ...input }) => toTextResponse(await akoyaService.statement({
+        ...input,
+        providerId,
+        idToken: await resolveUserIdToken(vaultService, userId, providerId, idToken)
+    })));
+    server.registerTool('akoya_search_tax_forms', {
+        description: 'Call Akoya search tax forms endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            providerId: z.string().min(1).optional(),
+            taxYear: z.string().min(1).optional(),
+            taxForms: z.string().min(1).optional(),
+            accountId: z.string().min(1).optional(),
+            accept: z.string().min(1).optional(),
+            interactionId: z.string().min(1).optional(),
+            idToken: z.string().min(1).optional(),
+            userId: z.string().min(1).optional(),
+            interactionType: z.enum(['USER', 'BATCH']).optional(),
+            intentType: z.enum(['payments', 'nonpayments']).optional(),
+            lastAccess: z.string().min(1).optional()
+        })
+    }, async ({ userId, providerId, idToken, ...input }) => toTextResponse(await akoyaService.searchTaxForms({
+        ...input,
+        providerId,
+        idToken: await resolveUserIdToken(vaultService, userId, providerId, idToken)
+    })));
+    server.registerTool('akoya_retrieve_tax_form', {
+        description: 'Call Akoya retrieve tax form endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            providerId: z.string().min(1).optional(),
+            taxFormId: z.string().min(1).optional(),
+            taxDataType: z.enum(['JSON', 'BASE64_PDF']).optional(),
+            accept: z.string().min(1).optional(),
+            interactionId: z.string().min(1).optional(),
+            idToken: z.string().min(1).optional(),
+            userId: z.string().min(1).optional(),
+            interactionType: z.enum(['USER', 'BATCH']).optional(),
+            intentType: z.enum(['payments', 'nonpayments']).optional(),
+            lastAccess: z.string().min(1).optional()
+        })
+    }, async ({ userId, providerId, idToken, ...input }) => toTextResponse(await akoyaService.retrieveTaxForm({
+        ...input,
+        providerId,
+        idToken: await resolveUserIdToken(vaultService, userId, providerId, idToken)
+    })));
+    server.registerTool('akoya_create_app', {
+        description: 'Call Akoya create app endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            serviceToken: z.string().min(1).optional(),
+            body: z.record(z.string(), z.unknown())
+        })
+    }, async (input) => toTextResponse(await akoyaService.createApp(input)));
+    server.registerTool('akoya_update_app', {
+        description: 'Call Akoya update app endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            recipientId: z.string().min(1).optional(),
+            appId: z.string().min(1).optional(),
+            serviceToken: z.string().min(1).optional(),
+            operations: z.array(z.record(z.string(), z.unknown())).min(1)
+        })
+    }, async (input) => toTextResponse(await akoyaService.updateApp(input)));
+    server.registerTool('akoya_get_all_apps', {
+        description: 'Call Akoya get all apps endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            recipientId: z.string().min(1).optional(),
+            offset: z.number().int().nonnegative().optional(),
+            limit: z.number().int().positive().optional(),
+            serviceToken: z.string().min(1).optional()
+        })
+    }, async (input) => toTextResponse(await akoyaService.getAllApps(input)));
+    server.registerTool('akoya_get_purchased_products', {
+        description: 'Call Akoya get purchased products endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            recipientId: z.string().min(1).optional(),
+            serviceToken: z.string().min(1).optional()
+        })
+    }, async (input) => toTextResponse(await akoyaService.getPurchasedProducts(input)));
+    server.registerTool('akoya_get_valid_providers_for_products', {
+        description: 'Call Akoya get valid providers for products endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            recipientId: z.string().min(1).optional(),
+            products: z.string().min(1),
+            serviceToken: z.string().min(1).optional()
+        })
+    }, async (input) => toTextResponse(await akoyaService.getValidProvidersForProducts(input)));
+    server.registerTool('akoya_get_subscriptions_for_app', {
+        description: 'Call Akoya subscriptions for app endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            appId: z.string().min(1).optional(),
+            status: z.enum(['ACTIVE', 'PENDING', 'PROCESSING', 'TERMINATED', 'DENIED']).optional(),
+            offset: z.number().int().nonnegative().optional(),
+            limit: z.number().int().positive().optional(),
+            serviceToken: z.string().min(1).optional()
+        })
+    }, async (input) => toTextResponse(await akoyaService.getSubscriptionsForApp(input)));
+    server.registerTool('akoya_list_notification_subscriptions', {
+        description: 'Call Akoya list notification subscriptions endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            serviceToken: z.string().min(1).optional()
+        })
+    }, async (input) => toTextResponse(await akoyaService.listNotificationSubscriptions(input)));
+    server.registerTool('akoya_create_notification_subscription', {
+        description: 'Call Akoya create notification subscription endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            category: z.string().min(1),
+            type: z.string().min(1),
+            callbackUrl: z.string().url(),
+            effectiveDate: z.string().min(1).optional(),
+            callbackEmail: z.string().email().optional(),
+            serviceToken: z.string().min(1).optional()
+        })
+    }, async (input) => toTextResponse(await akoyaService.createNotificationSubscription(input)));
+    server.registerTool('akoya_get_notification_subscription_by_id', {
+        description: 'Call Akoya get notification subscription by id endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            subscriptionId: z.string().min(1).optional(),
+            serviceToken: z.string().min(1).optional()
+        })
+    }, async (input) => toTextResponse(await akoyaService.getNotificationSubscriptionById(input)));
+    server.registerTool('akoya_update_notification_subscription', {
+        description: 'Call Akoya update notification subscription endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            subscriptionId: z.string().min(1).optional(),
+            callbackUrl: z.string().url().optional(),
+            effectiveDate: z.string().min(1).optional(),
+            callbackEmail: z.string().email().optional(),
+            serviceToken: z.string().min(1).optional()
+        })
+    }, async (input) => toTextResponse(await akoyaService.updateNotificationSubscription(input)));
+    server.registerTool('akoya_delete_notification_subscription', {
+        description: 'Call Akoya delete notification subscription endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            subscriptionId: z.string().min(1).optional(),
+            serviceToken: z.string().min(1).optional()
+        })
+    }, async (input) => toTextResponse(await akoyaService.deleteNotificationSubscription(input)));
+    server.registerTool('akoya_send_sandbox_test_event', {
+        description: 'Call Akoya send sandbox test event endpoint.',
+        inputSchema: z.object({
+            test: z.boolean().optional(),
+            version: z.string().min(1).optional(),
+            id: z.string().min(1),
+            serviceToken: z.string().min(1).optional()
+        })
+    }, async (input) => toTextResponse(await akoyaService.sendSandboxTestEvent(input)));
     server.registerTool('akoya_consent_grant', {
-        description: 'Get consent grant details by consent id (service API).',
+        description: 'Call Akoya consent grant endpoint.',
         inputSchema: z.object({
             test: z.boolean().optional(),
             version: z.string().min(1).optional(),
@@ -260,16 +622,9 @@ export function buildServer() {
     server.registerTool('vault_connection_info', {
         description: 'Return Vault provider and connectivity configuration for variable storage.',
         inputSchema: z.object({})
-    }, async () => ({
-        content: [
-            {
-                type: 'text',
-                text: JSON.stringify({
-                    vault: vaultService.getConnectionInfo(),
-                    configured: vaultService.isConfigured()
-                }, null, 2)
-            }
-        ]
+    }, async () => toTextResponse({
+        vault: vaultService.getConnectionInfo(),
+        configured: vaultService.isConfigured()
     }));
     server.registerTool('vault_set_variable', {
         description: 'Store a variable in Vault at a given secret path and key.',
@@ -280,14 +635,7 @@ export function buildServer() {
         })
     }, async ({ secretPath, key, value }) => {
         await vaultService.setVariable(secretPath, key, value);
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: JSON.stringify({ stored: true, secretPath, key }, null, 2)
-                }
-            ]
-        };
+        return toTextResponse({ stored: true, secretPath, key });
     });
     server.registerTool('vault_get_variable', {
         description: 'Get a variable from Vault by secret path and key.',
@@ -299,19 +647,14 @@ export function buildServer() {
     }, async ({ secretPath, key, revealValue }) => {
         const value = await vaultService.getVariable(secretPath, key);
         const found = value !== null;
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: JSON.stringify({
-                        secretPath,
-                        key,
-                        found,
-                        value: revealValue ? value : found ? 'set' : null
-                    }, null, 2)
-                }
-            ]
-        };
+        const sensitiveRevealAllowed = revealValue === true && allowSensitiveOutput;
+        return toTextResponse({
+            secretPath,
+            key,
+            found,
+            sensitiveOutputIncluded: sensitiveRevealAllowed,
+            value: sensitiveRevealAllowed ? value : found ? 'set' : null
+        });
     });
     server.registerTool('vault_list_variables', {
         description: 'List all variable keys stored at a Vault secret path.',
@@ -320,14 +663,7 @@ export function buildServer() {
         })
     }, async ({ secretPath }) => {
         const keys = await vaultService.listVariables(secretPath);
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: JSON.stringify({ secretPath, keys }, null, 2)
-                }
-            ]
-        };
+        return toTextResponse({ secretPath, keys });
     });
     server.registerTool('vault_delete_variable', {
         description: 'Delete a variable key from a Vault secret path.',
@@ -337,14 +673,7 @@ export function buildServer() {
         })
     }, async ({ secretPath, key }) => {
         const deleted = await vaultService.deleteVariable(secretPath, key);
-        return {
-            content: [
-                {
-                    type: 'text',
-                    text: JSON.stringify({ secretPath, key, deleted }, null, 2)
-                }
-            ]
-        };
+        return toTextResponse({ secretPath, key, deleted });
     });
     return server;
 }

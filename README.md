@@ -1,6 +1,10 @@
 # akoya-mcp
 
-MCP server for Akoya integrations with Vault-backed variable storage.
+MCP server for Akoya integrations with full endpoint coverage from the catalog in this repository, plus Vault-backed variable storage.
+
+## Scope
+
+This project maps all endpoints listed in the Akoya Endpoint Catalog section to MCP tools.
 
 ## Vault Variable Storage
 
@@ -70,15 +74,44 @@ Behavior:
 - `akoya_auth_url`: Builds Akoya OAuth authorization URL (`/auth`).
 - `akoya_token_exchange`: Exchanges authorization code for tokens; supports optional per-user token storage.
 - `akoya_refresh_token`: Refreshes tokens; can read/write user-scoped refresh/id tokens.
+- `akoya_revoke_refresh_token`: Revokes refresh token (`/revoke`).
+- `akoya_service_token`: Requests service token (`/oauth2/token`).
+- `akoya_account_info`: Calls account information endpoint.
 - `akoya_accounts`: Calls Akoya investments accounts endpoint.
 - `akoya_balances`: Calls Akoya balances endpoint.
 - `akoya_transactions`: Calls Akoya transactions endpoint.
+- `akoya_taxlots`: Calls Akoya taxlots endpoint.
+- `akoya_customer_info`: Calls Akoya customer information endpoint.
+- `akoya_account_holder_info`: Calls Akoya account holder information endpoint.
+- `akoya_payments`: Calls Akoya payments endpoint.
+- `akoya_statement_list`: Calls Akoya statement list endpoint.
+- `akoya_statement`: Calls Akoya statement retrieval endpoint.
+- `akoya_search_tax_forms`: Calls Akoya search tax forms endpoint.
+- `akoya_retrieve_tax_form`: Calls Akoya retrieve tax form endpoint.
+- `akoya_create_app`: Calls create app endpoint.
+- `akoya_update_app`: Calls update app endpoint.
+- `akoya_get_all_apps`: Calls get all apps endpoint.
+- `akoya_get_purchased_products`: Calls get purchased products endpoint.
+- `akoya_get_valid_providers_for_products`: Calls get valid providers for products endpoint.
+- `akoya_get_subscriptions_for_app`: Calls get subscriptions for app endpoint.
+- `akoya_list_notification_subscriptions`: Calls list notification subscriptions endpoint.
+- `akoya_create_notification_subscription`: Calls create notification subscription endpoint.
+- `akoya_get_notification_subscription_by_id`: Calls get notification subscription by id endpoint.
+- `akoya_update_notification_subscription`: Calls update notification subscription endpoint.
+- `akoya_delete_notification_subscription`: Calls delete notification subscription endpoint.
+- `akoya_send_sandbox_test_event`: Calls sandbox test event endpoint.
 - `akoya_consent_grant`: Calls Akoya consent grant endpoint.
 - `vault_connection_info`: Returns Vault provider and connection details, including startup import status and restored internal secret-path count.
 - `vault_set_variable`: Stores a value at `secretPath` + `key`.
-- `vault_get_variable`: Reads a value at `secretPath` + `key` (masked unless `revealValue=true`).
+- `vault_get_variable`: Reads a value at `secretPath` + `key` (masked by default; plaintext only if sensitive output is explicitly enabled).
 - `vault_list_variables`: Lists stored keys at a path.
 - `vault_delete_variable`: Deletes a key at a path.
+
+Sensitive output controls:
+
+- `MCP_ALLOW_SENSITIVE_OUTPUT` (optional, default `false`)
+- When `false`, token-exchange and refresh tools return token fields redacted, and `vault_get_variable` does not return plaintext values even if `revealValue=true`.
+- When `true`, sensitive values are included in tool responses. Use only in trusted local/operator-controlled contexts.
 
 User-scoped OAuth tokens are stored under:
 
@@ -237,6 +270,7 @@ What it validates:
 - Use `akoya_oauth_create_state` before redirect and `akoya_oauth_validate_state` on callback to enforce state checks.
 - Use `akoya_token_exchange` and `akoya_refresh_token` with `userId` to keep token lifecycles separated per user/provider.
 - Use `akoya_consent_grant` to fetch consent details after consent completion in the host app.
+- Keep `MCP_ALLOW_SENSITIVE_OUTPUT=false` for autonomous LLM tool execution unless strict policy guardrails and runtime approvals are in place.
 
 ## Action Log
 
@@ -254,4 +288,6 @@ What it validates:
 - 2026-07-03: Added emulated Akoya test suite and npm test scripts for no-live-connection validation.
 - 2026-07-03: Added MCP stdio integration tests for tool listing and tool execution behavior.
 - 2026-07-03: Exposed Akoya auth/data consent tools (`akoya_auth_url`, `akoya_token_exchange`, `akoya_refresh_token`, `akoya_accounts`, `akoya_balances`, `akoya_transactions`, `akoya_consent_grant`) and added OAuth state/user-token guidance for host apps.
+- 2026-07-03: Clarified focused MCP scope (transaction/account workflows) and added sensitive-output guardrail (`MCP_ALLOW_SENSITIVE_OUTPUT`) for token/secret exposure.
+- 2026-07-03: Expanded MCP tool registration to full Akoya endpoint catalog coverage across auth, data, apps management, notifications, and consent APIs.
 
