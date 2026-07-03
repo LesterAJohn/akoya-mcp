@@ -1126,17 +1126,13 @@ export class AkoyaService {
     await this.ensureStartupSeedLoaded();
 
     for (const key of AKOYA_URL_KEYS) {
-      const vaultValue = await this.vault.getVariable(GENERAL_CONFIG_PATH, key);
-      if (vaultValue && vaultValue.length > 0) {
-        this.urlConfigCache[key] = vaultValue;
-        continue;
-      }
-
-      const envName = AKOYA_URL_ENV[key];
-      const envValue = process.env[envName];
-      const fallback = envValue && envValue.length > 0 ? envValue : DEFAULT_AKOYA_URLS[key];
-      await this.vault.setVariable(GENERAL_CONFIG_PATH, key, fallback);
-      this.urlConfigCache[key] = fallback;
+      const value = await this.resolveStartupValue(
+        GENERAL_CONFIG_PATH,
+        key,
+        DEFAULT_AKOYA_URLS[key],
+        AKOYA_URL_ENV[key]
+      );
+      this.urlConfigCache[key] = value;
     }
 
     this.urlConfigLoaded = true;
@@ -1148,7 +1144,7 @@ export class AkoyaService {
     }
 
     for (const key of AKOYA_GENERAL_CONFIG_KEYS) {
-      await this.seedIfMissing(
+      await this.resolveStartupValue(
         GENERAL_CONFIG_PATH,
         key,
         DEFAULT_AKOYA_GENERAL_CONFIG[key],
@@ -1157,7 +1153,7 @@ export class AkoyaService {
     }
 
     for (const key of AKOYA_CREDENTIAL_KEYS) {
-      await this.seedIfMissing(
+      await this.resolveStartupValue(
         GENERAL_CREDENTIALS_PATH,
         key,
         DEFAULT_AKOYA_CREDENTIALS[key],
@@ -1166,7 +1162,7 @@ export class AkoyaService {
     }
 
     for (const key of AKOYA_TOKEN_KEYS) {
-      await this.seedIfMissing(
+      await this.resolveStartupValue(
         GENERAL_TOKENS_PATH,
         key,
         DEFAULT_AKOYA_TOKENS[key],
@@ -1177,20 +1173,25 @@ export class AkoyaService {
     this.startupSeedLoaded = true;
   }
 
-  private async seedIfMissing(
+  private async resolveStartupValue(
     secretPath: string,
-    key: AkoyaGeneralConfigKey | AkoyaCredentialKey | AkoyaTokenKey,
+    key: AkoyaGeneralConfigKey | AkoyaCredentialKey | AkoyaTokenKey | AkoyaUrlConfigKey,
     defaultValue: string,
     envName: string | null
-  ): Promise<void> {
-    const existing = await this.vault.getVariable(secretPath, key);
-    if (existing !== null) {
-      return;
+  ): Promise<string> {
+    const envValue = envName ? process.env[envName] : undefined;
+    if (envValue !== undefined && envValue.length > 0) {
+      await this.vault.setVariable(secretPath, key, envValue);
+      return envValue;
     }
 
-    const envValue = envName ? process.env[envName] : undefined;
-    const value = envValue && envValue.length > 0 ? envValue : defaultValue;
-    await this.vault.setVariable(secretPath, key, value);
+    const existing = await this.vault.getVariable(secretPath, key);
+    if (existing !== null) {
+      return existing;
+    }
+
+    await this.vault.setVariable(secretPath, key, defaultValue);
+    return defaultValue;
   }
 
   private async request(options: RequestOptions): Promise<unknown> {

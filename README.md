@@ -43,8 +43,10 @@ Additional startup seed keys are also initialized into Vault when missing:
 
 Behavior:
 
-- The server checks Vault first for each URL config key.
-- If missing, it seeds Vault from environment overrides (if provided) or defaults from the Akoya URL config file.
+- Hydration order for startup config items is: environment variable -> Vault -> configuration file defaults.
+- If an environment value is present, it is used and written to Vault.
+- If no environment value exists, the server uses Vault.
+- If Vault is missing the key, the server seeds from configuration file defaults.
 - This works the same for both internal and external Vault providers.
 
 ### Internal Vault Environment Variables
@@ -198,4 +200,5 @@ docker compose up
 - 2026-07-03: Added Akoya URL config seeding with Vault-first resolution and fallback from env/default config file.
 - 2026-07-03: Added startup seed defaults for Akoya general config keys, credentials, and tokens when missing in Vault.
 - 2026-07-03: Added startup section with npm commands and Docker Compose YAML example.
+- 2026-07-03: Updated startup hydration order to environment variable -> Vault -> configuration file defaults.
 
