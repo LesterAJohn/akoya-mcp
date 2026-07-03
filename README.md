@@ -57,6 +57,7 @@ Behavior:
 
 - `VAULT_INTERNAL_BINARY_PATH` (optional, default `./.vault-internal.bin`): Binary snapshot file loaded on startup and updated by exports.
 - `VAULT_EXPORT_INTERVAL_SECONDS` (optional, default `900`): Automatic export interval for internal Vault snapshots.
+- `VAULT_INTERNAL_ENCRYPTION_KEY` (optional): When set, internal snapshot exports are encrypted and imports require the same key.
 
 ### External Vault Environment Variables
 
@@ -218,6 +219,7 @@ services:
 			VAULT_PROVIDER: internal
 			VAULT_INTERNAL_BINARY_PATH: /data/.vault-internal.bin
 			VAULT_EXPORT_INTERVAL_SECONDS: "900"
+			VAULT_INTERNAL_ENCRYPTION_KEY: change-me-local-only
 			AKOYA_PROVIDER_ID: mikomo
 			AKOYA_DATA_VERSION: v3
 			AKOYA_MANAGEMENT_VERSION: v2
@@ -290,4 +292,5 @@ What it validates:
 - 2026-07-03: Exposed Akoya auth/data consent tools (`akoya_auth_url`, `akoya_token_exchange`, `akoya_refresh_token`, `akoya_accounts`, `akoya_balances`, `akoya_transactions`, `akoya_consent_grant`) and added OAuth state/user-token guidance for host apps.
 - 2026-07-03: Clarified focused MCP scope (transaction/account workflows) and added sensitive-output guardrail (`MCP_ALLOW_SENSITIVE_OUTPUT`) for token/secret exposure.
 - 2026-07-03: Expanded MCP tool registration to full Akoya endpoint catalog coverage across auth, data, apps management, notifications, and consent APIs.
+- 2026-07-03: Added optional internal Vault snapshot encryption using `VAULT_INTERNAL_ENCRYPTION_KEY`, with tests for restore and wrong-key safety.
 

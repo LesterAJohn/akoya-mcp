@@ -18,6 +18,7 @@ function setRequiredTestEnv(): void {
   process.env.VAULT_PROVIDER = 'internal';
   process.env.VAULT_INTERNAL_BINARY_PATH = join(tmpdir(), `akoya-mcp-test-${randomUUID()}.bin`);
   process.env.VAULT_EXPORT_INTERVAL_SECONDS = '900';
+  process.env.VAULT_INTERNAL_ENCRYPTION_KEY = 'emulator-test-encryption-key';
 }
 
 function clearAkoyaUrlEnv(): void {

@@ -20,6 +20,7 @@ function configureTestEnvironment(): void {
   process.env.VAULT_PROVIDER = 'internal';
   process.env.VAULT_INTERNAL_BINARY_PATH = join(tmpdir(), `akoya-mcp-mcp-tools-${randomUUID()}.bin`);
   process.env.VAULT_EXPORT_INTERVAL_SECONDS = '900';
+  process.env.VAULT_INTERNAL_ENCRYPTION_KEY = 'integration-test-encryption-key';
   process.env.MCP_ALLOW_SENSITIVE_OUTPUT = 'false';
 }
 
