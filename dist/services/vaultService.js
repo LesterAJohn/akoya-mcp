@@ -1,6 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { gzipSync, gunzipSync } from 'node:zlib';
+const INTERNAL_ENCRYPTED_MAGIC = Buffer.from('AKY1', 'ascii');
+const INTERNAL_ENCRYPTION_SALT_LENGTH = 16;
+const INTERNAL_ENCRYPTION_IV_LENGTH = 12;
+const INTERNAL_ENCRYPTION_TAG_LENGTH = 16;
 const internalStore = new Map();
 let internalExportTimer = null;
 function getVaultConfig() {
@@ -12,6 +17,8 @@ function getVaultConfig() {
     const parsedInterval = Number.parseInt(intervalEnv, 10);
     const exportIntervalSeconds = Number.isFinite(parsedInterval) && parsedInterval > 0 ? parsedInterval : 900;
     const internalBinaryPath = resolve(process.env.VAULT_INTERNAL_BINARY_PATH ?? './.vault-internal.bin');
+    const internalEncryptionKeyRaw = process.env.VAULT_INTERNAL_ENCRYPTION_KEY ?? '';
+    const internalEncryptionKey = internalEncryptionKeyRaw.trim().length > 0 ? internalEncryptionKeyRaw : null;
     return {
         provider,
         address: process.env.VAULT_ADDR ?? null,
@@ -20,7 +27,8 @@ function getVaultConfig() {
         kvMount: process.env.VAULT_KV_MOUNT ?? 'secret',
         kvVersion,
         internalBinaryPath,
-        exportIntervalSeconds
+        exportIntervalSeconds,
+        internalEncryptionKey
     };
 }
 export class VaultService {
@@ -44,6 +52,7 @@ export class VaultService {
             VAULT_KV_VERSION: this.config.kvVersion,
             VAULT_INTERNAL_BINARY_PATH: this.config.internalBinaryPath,
             VAULT_EXPORT_INTERVAL_SECONDS: this.config.exportIntervalSeconds,
+            VAULT_INTERNAL_ENCRYPTION_KEY: this.config.internalEncryptionKey ? 'set' : null,
             VAULT_INTERNAL_IMPORT_STATUS: this.internalImportStatus,
             VAULT_INTERNAL_RESTORED_PATHS: this.internalRestoredPaths
         };
@@ -138,7 +147,7 @@ export class VaultService {
                 this.internalRestoredPaths = 0;
                 return;
             }
-            const payloadBuffer = gunzipSync(binaryContent);
+            const payloadBuffer = gunzipSync(this.decryptIfEncrypted(binaryContent));
             const payloadText = payloadBuffer.toString('utf8');
             const parsed = JSON.parse(payloadText);
             internalStore.clear();
@@ -164,11 +173,57 @@ export class VaultService {
         }
         const serialized = JSON.stringify(payload);
         const compressed = gzipSync(Buffer.from(serialized, 'utf8'));
+        const persistedBuffer = this.encryptIfConfigured(compressed);
         const outputPath = this.config.internalBinaryPath;
         const tmpPath = `${outputPath}.tmp`;
         mkdirSync(dirname(outputPath), { recursive: true });
-        writeFileSync(tmpPath, compressed);
+        writeFileSync(tmpPath, persistedBuffer);
         renameSync(tmpPath, outputPath);
+    }
+    encryptIfConfigured(content) {
+        if (!this.config.internalEncryptionKey) {
+            return content;
+        }
+        const salt = randomBytes(INTERNAL_ENCRYPTION_SALT_LENGTH);
+        const iv = randomBytes(INTERNAL_ENCRYPTION_IV_LENGTH);
+        const key = scryptSync(this.config.internalEncryptionKey, salt, 32);
+        const cipher = createCipheriv('aes-256-gcm', key, iv);
+        const ciphertext = Buffer.concat([cipher.update(content), cipher.final()]);
+        const authTag = cipher.getAuthTag();
+        return Buffer.concat([INTERNAL_ENCRYPTED_MAGIC, salt, iv, authTag, ciphertext]);
+    }
+    decryptIfEncrypted(content) {
+        if (!this.isEncryptedInternalSnapshot(content)) {
+            return content;
+        }
+        if (!this.config.internalEncryptionKey) {
+            throw new Error('Internal Vault snapshot is encrypted but VAULT_INTERNAL_ENCRYPTION_KEY is not set.');
+        }
+        const headerLength = INTERNAL_ENCRYPTED_MAGIC.length +
+            INTERNAL_ENCRYPTION_SALT_LENGTH +
+            INTERNAL_ENCRYPTION_IV_LENGTH +
+            INTERNAL_ENCRYPTION_TAG_LENGTH;
+        if (content.length <= headerLength) {
+            throw new Error('Internal Vault snapshot is encrypted but payload is invalid.');
+        }
+        let offset = INTERNAL_ENCRYPTED_MAGIC.length;
+        const salt = content.subarray(offset, offset + INTERNAL_ENCRYPTION_SALT_LENGTH);
+        offset += INTERNAL_ENCRYPTION_SALT_LENGTH;
+        const iv = content.subarray(offset, offset + INTERNAL_ENCRYPTION_IV_LENGTH);
+        offset += INTERNAL_ENCRYPTION_IV_LENGTH;
+        const authTag = content.subarray(offset, offset + INTERNAL_ENCRYPTION_TAG_LENGTH);
+        offset += INTERNAL_ENCRYPTION_TAG_LENGTH;
+        const ciphertext = content.subarray(offset);
+        const key = scryptSync(this.config.internalEncryptionKey, salt, 32);
+        const decipher = createDecipheriv('aes-256-gcm', key, iv);
+        decipher.setAuthTag(authTag);
+        return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    }
+    isEncryptedInternalSnapshot(content) {
+        if (content.length < INTERNAL_ENCRYPTED_MAGIC.length) {
+            return false;
+        }
+        return content.subarray(0, INTERNAL_ENCRYPTED_MAGIC.length).equals(INTERNAL_ENCRYPTED_MAGIC);
     }
     startInternalExporter() {
         if (internalExportTimer) {
